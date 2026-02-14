@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Horse Year Particle Experience</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Microsoft+YaHei&display=swap" rel="stylesheet">
+    
+    <style>
+      body { margin: 0; overflow: hidden; background-color: #000000; font-family: "Microsoft YaHei", sans-serif; }
+      /* Custom Scrollbar for Config Panel */
+      .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+      .custom-scrollbar::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.05); }
+      .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 2px; }
+      .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
+    </style>
+
+    <!-- React & ReactDOM (UMD) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Three.js (UMD) -->
+    <script crossorigin src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+    
+    <!-- MediaPipe -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <!-- Babel for in-browser JSX compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-presets="typescript,react">
+        const { useState, useEffect, useRef, useMemo, useCallback } = React;
+        const THREE = window.THREE;
+
+        // --- TYPES ---
+        const GestureType = {
+          NONE: 'NONE',
+          OPEN_PALM: 'OPEN_PALM',
+          FIST: 'FIST',
+          PINCH: 'PINCH'
+        };
+
+        // --- SERVICES: Horse Shape (Fu) ---
+        const getFuPoints = (count) => {
+            const width = 300;
+            const height = 300;
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            
+            if (!ctx) return [];
+
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, width, height);
+            
+            // Draw '福' Calligraphy
+            ctx.font = 'bold 240px "Ma Shan Zheng", "Kaiti", serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = '#ffffff'; 
+            ctx.fillText('福', width / 2, height / 2 + 10); 
+
+            const imageData = ctx.getImageData(0, 0, width, height);
+            const data = imageData.data;
+            const validPixels = [];
+
+            for (let i = 0; i < data.length; i += 4) {
+                if (data[i] > 30) { 
+                    const index = i / 4;
+                    const x = index % width;
+                    const y = Math.floor(index / width);
+                    validPixels.push({ x, y });
+                }
+            }
+
+            const points = [];
+            if (validPixels.length === 0) return points;
+
+            const scale = 0.05; 
+            
+            for (let i = 0; i < count; i++) {
+                const pixel = validPixels[Math.floor(Math.random() * validPixels.length)];
+                const wx = (pixel.x - width / 2) * scale;
+                const wy = -(pixel.y - height / 2) * scale;
+                const wz = (Math.random() - 0.5) * 1.5;
+                const jitter = 0.05;
+                points.push(new THREE.Vector3(wx + (Math.random()-0.5)*jitter, wy + (Math.random()-0.5)*jitter, wz));
+            }
+
+            return points;
+        };
+
+        // --- SERVICES: Texture Generation ---
+        const createEmojiTexture = (emoji) => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 128;
+          canvas.height = 128;
+          const ctx = canvas.getContext('2d');
+          
+          if (ctx) {
+            ctx.font = '90px serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            
+            if (emoji === '🧧') {
+                ctx.shadowColor = 'rgba(255, 215, 0, 0.9)'; 
+                ctx.shadowBlur = 15; 
+                ctx.fillText(emoji, 64, 64);
+                ctx.shadowBlur = 0;
+                ctx.fillText(emoji, 64, 64);
+            } else {
+                ctx.shadowColor = 'rgba(255, 255, 255, 0.6)';
+                ctx.shadowBlur = 8;
+                ctx.fillStyle = 'white';
+                ctx.fillText(emoji, 64, 64);
+            }
+          }
+
+          const texture = new THREE.CanvasTexture(canvas);
+          texture.colorSpace = THREE.SRGBColorSpace;
+          texture.needsUpdate = true;
+          return texture;
+        };
+
+        const createShapeTexture = (type) => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 64;
+          canvas.height = 64;
+          const ctx = canvas.getContext('2d');
+
+          if (ctx) {
+            ctx.fillStyle = '#ffffff';
+            ctx.shadowColor = '#ffffcc';
+            ctx.shadowBlur = 12;
+            
+            ctx.beginPath();
+            if (type === 'circle') {
+              ctx.arc(32, 32, 18, 0, Math.PI * 2);
+            } else {
+              ctx.rect(14, 14, 36, 36);
+            }
+            ctx.fill();
+          }
+
+          const texture = new THREE.CanvasTexture(canvas);
+          texture.colorSpace = THREE.SRGBColorSpace;
+          texture.needsUpdate = true;
+          return texture;
+        };
+
+        // --- COMPONENT: Experience ---
+        const PARTICLE_COUNT = 3000; 
+        const PARTICLES_TYPES = ['🧧', '🎆', '🎉', '✨', '🎁', '🀄', 'circle', 'square'];
+
+        const Experience = ({ gesture, pinchDistance, photos, handOpenAmount }) => {
+          const mountRef = useRef(null);
+          
+          // Refs
+          const gestureRef = useRef(gesture);
+          const pinchDistanceRef = useRef(pinchDistance);
+          const photosRef = useRef(photos);
+          const handOpenAmountRef = useRef(handOpenAmount);
+
+          // State Tracking
+          const prevGestureRef = useRef(GestureType.NONE);
+          const activePhotoIndexRef = useRef(-1);
+
+          useEffect(() => {
+            gestureRef.current = gesture;
+            pinchDistanceRef.current = pinchDistance;
+            photosRef.current = photos;
+            handOpenAmountRef.current = handOpenAmount;
+          }, [gesture, pinchDistance, photos, handOpenAmount]);
+
+          // Memoized Points
+          const shapeTargetPoints = useMemo(() => getFuPoints(PARTICLE_COUNT), []);
+          
+          // Scene Refs
+          const sceneRef = useRef(null);
+          const containerGroupRef = useRef(null);
+          const photosGroupRef = useRef(null);
+          
+          const particleData = useRef([]);
+
+          useEffect(() => {
+            if (!mountRef.current) return;
+
+            // SETUP
+            const scene = new THREE.Scene();
+            sceneRef.current = scene;
+            scene.fog = new THREE.FogExp2(0x000000, 0.0);
+
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 12;
+
+            const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.toneMapping = THREE.NoToneMapping;
+            mountRef.current.appendChild(renderer.domElement);
+
+            // PARTICLES
+            const containerGroup = new THREE.Group();
+            scene.add(containerGroup);
+            containerGroupRef.current = containerGroup;
+
+            const textureMap = new Map();
+            PARTICLES_TYPES.forEach(type => {
+                let texture;
+                if (['circle', 'square'].includes(type)) {
+                    texture = createShapeTexture(type);
+                } else {
+                    texture = createEmojiTexture(type);
+                }
+                textureMap.set(type, texture);
+            });
+
+            // Distributions
+            const particleAssignments = [];
+            const typeCounts = {};
+            PARTICLES_TYPES.forEach(t => typeCounts[t] = 0);
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const type = PARTICLES_TYPES[Math.floor(Math.random() * PARTICLES_TYPES.length)];
+                particleAssignments.push(type);
+                typeCounts[type]++;
+            }
+
+            const instancedMeshes = [];
+            const meshMap = new Map();
+            
+            PARTICLES_TYPES.forEach(type => {
+                const count = typeCounts[type];
+                if (count > 0) {
+                    const geo = new THREE.PlaneGeometry(1, 1);
+                    const opacityArray = new Float32Array(count);
+                    opacityArray.fill(1.0);
+                    geo.setAttribute('instanceOpacity', new THREE.InstancedBufferAttribute(opacityArray, 1));
+
+                    const mat = new THREE.MeshBasicMaterial({
+                        map: textureMap.get(type),
+                        transparent: true,
+                        opacity: 1.0, 
+                        color: 0xffffff,
+                        blending: THREE.NormalBlending, 
+                        depthWrite: false,
+                        side: THREE.DoubleSide
+                    });
+                    
+                    mat.onBeforeCompile = (shader) => {
+                        shader.vertexShader = `
+                          attribute float instanceOpacity;
+                          varying float vAlpha;
+                          ${shader.vertexShader}
+                        `.replace('#include <begin_vertex>', '#include <begin_vertex>\n vAlpha = instanceOpacity;');
+                        shader.fragmentShader = `
+                          varying float vAlpha;
+                          ${shader.fragmentShader}
+                        `.replace('#include <color_fragment>', '#include <color_fragment>\n diffuseColor.a *= vAlpha;');
+                    };
+
+                    const mesh = new THREE.InstancedMesh(geo, mat, count);
+                    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+                    containerGroup.add(mesh);
+                    instancedMeshes.push(mesh);
+                    meshMap.set(type, mesh);
+                }
+            });
+
+            particleData.current = [];
+            const currentIndices = {};
+            PARTICLES_TYPES.forEach(t => currentIndices[t] = 0);
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const type = particleAssignments[i];
+                const mesh = meshMap.get(type);
+                const instanceIdx = currentIndices[type]++;
+
+                const x = (Math.random() - 0.5) * 30;
+                const y = (Math.random() - 0.5) * 20;
+                const z = (Math.random() - 0.5) * 15;
+                const opacityFactor = 0.1 + Math.random() * 0.7;
+
+                mesh.geometry.attributes.instanceOpacity.setX(instanceIdx, opacityFactor);
+
+                particleData.current.push({
+                    mesh: mesh,
+                    instanceIndex: instanceIdx,
+                    currentPos: new THREE.Vector3(x, y, z),
+                    basePos: new THREE.Vector3(x, y, z),
+                    phase: Math.random() * Math.PI * 2,
+                    rotation: Math.random() * Math.PI * 2,
+                    rotationSpeed: (Math.random() - 0.5) * 3.0, 
+                    scale: 0.35 + Math.random() * 0.25,
+                    type: type,
+                    opacityFactor: opacityFactor
+                });
+            }
+            
+            instancedMeshes.forEach(mesh => {
+                if (mesh.geometry.attributes.instanceOpacity) {
+                    mesh.geometry.attributes.instanceOpacity.needsUpdate = true;
+                }
+            });
+
+            // PHOTOS GROUP
+            const photosGroup = new THREE.Group();
+            scene.add(photosGroup);
+            photosGroupRef.current = photosGroup;
+
+            // ANIMATION
+            const clock = new THREE.Clock();
+            let animationFrameId;
+            const dummy = new THREE.Object3D();
+            const color = new THREE.Color();
+
+            const animate = () => {
+              animationFrameId = requestAnimationFrame(animate);
+              
+              const delta = clock.getDelta();
+              const time = clock.getElapsedTime();
+
+              const currentGesture = gestureRef.current;
+              const currentHandOpen = handOpenAmountRef.current;
+              const currentPinchDist = pinchDistanceRef.current;
+              const currentPhotos = photosRef.current;
+
+              let targetMode = 'RANDOM'; 
+              if (currentGesture === GestureType.FIST) targetMode = 'FU'; 
+              else if (currentGesture === GestureType.OPEN_PALM) targetMode = 'RANDOM';
+              else if (currentGesture === GestureType.PINCH) targetMode = 'RANDOM'; 
+
+              // Fog
+              if (scene.fog instanceof THREE.FogExp2) {
+                const targetDensity = (targetMode === 'FU') ? 0.002 : 0.035; 
+                scene.fog.density = THREE.MathUtils.lerp(scene.fog.density, targetDensity, delta * 1.5);
+              }
+
+              // Rotation
+              if (currentGesture === GestureType.OPEN_PALM) {
+                containerGroup.rotation.y += delta * 0.2;
+              } else {
+                containerGroup.rotation.y = THREE.MathUtils.lerp(containerGroup.rotation.y, 0, delta * 3);
+              }
+
+              // Photo Cycling
+              const isPinchedState = currentGesture === GestureType.PINCH;
+              if (isPinchedState && prevGestureRef.current !== GestureType.PINCH) {
+                 if (currentPhotos.length > 0) {
+                     activePhotoIndexRef.current = (activePhotoIndexRef.current + 1) % currentPhotos.length;
+                 }
+              }
+              prevGestureRef.current = currentGesture;
+
+              const activePhoto = (currentPhotos.length > 0 && activePhotoIndexRef.current >= 0)
+                  ? currentPhotos[activePhotoIndexRef.current]
+                  : null;
+              const activePhotoId = activePhoto ? activePhoto.id : null;
+
+              const activeRepulsionPoints = [];
+              if (photosGroupRef.current) {
+                 photosGroupRef.current.children.forEach(child => {
+                    if (child.userData.id === activePhotoId && child.scale.x > 1.0) { 
+                        activeRepulsionPoints.push({
+                            pos: child.position,
+                            radius: child.scale.y * 0.7 
+                        });
+                    }
+                 });
+              }
+
+              // Update Particles
+              particleData.current.forEach((data, i) => {
+                let targetPos = new THREE.Vector3();
+
+                if (targetMode === 'FU') {
+                   const pointIndex = i % shapeTargetPoints.length;
+                   targetPos.copy(shapeTargetPoints[pointIndex]);
+                   targetPos.x += Math.sin(time * 2 + data.phase) * 0.05;
+                   targetPos.y += Math.cos(time * 1.5 + data.phase) * 0.05;
+                } else {
+                   const spread = 1.0 + (currentHandOpen * 2.0); 
+                   targetPos.copy(data.basePos).multiplyScalar(spread);
+                   targetPos.y += Math.sin(time * 0.5 + data.phase) * 0.5;
+                }
+
+                if (activeRepulsionPoints.length > 0 && targetMode !== 'FU') {
+                    activeRepulsionPoints.forEach(photoInfo => {
+                        const distToPhoto = targetPos.distanceTo(photoInfo.pos);
+                        const repelRadius = photoInfo.radius + 1.0; 
+                        if (distToPhoto < repelRadius) {
+                            const repelDir = new THREE.Vector3().subVectors(targetPos, photoInfo.pos).normalize();
+                            const force = (repelRadius - distToPhoto) * 2.0; 
+                            targetPos.add(repelDir.multiplyScalar(force));
+                        }
+                    });
+                }
+
+                const lerpFactor = targetMode === 'FU' ? 0.06 : 0.03;
+                data.currentPos.lerp(targetPos, lerpFactor);
+
+                if (targetMode !== 'FU') {
+                    data.rotation += data.rotationSpeed * delta;
+                } else {
+                    data.rotation = THREE.MathUtils.lerp(data.rotation, 0, delta * 4);
+                }
+
+                dummy.position.copy(data.currentPos);
+                dummy.quaternion.copy(camera.quaternion); 
+                dummy.rotateZ(data.rotation); 
+                
+                // Depth of Field
+                const zDepth = data.currentPos.z;
+                const distFromFocus = Math.abs(zDepth);
+                let dofScale = 1.0;
+                let dofDim = 1.0;
+
+                if (targetMode !== 'FU') {
+                     const blurStrength = THREE.MathUtils.smoothstep(distFromFocus, 2.0, 15.0);
+                     dofScale = 1.0 + (blurStrength * 0.8); 
+                     dofDim = 1.0 - (blurStrength * 0.5); 
+                }
+
+                let s = data.scale * dofScale;
+                
+                if (['circle', 'square'].includes(data.type)) {
+                    color.setHSL(0.0, 1.0, 0.5); 
+                } else if (data.type === '🧧') {
+                    color.setHSL(0.0, 0.0, 1.0); 
+                } else {
+                    color.setHSL(0.6, 0.1, 0.8); 
+                }
+
+                const pulse = 0.8 + 0.2 * Math.sin(time * 3 + data.phase);
+                color.multiplyScalar(pulse * dofDim);
+                
+                if (targetMode !== 'FU') {
+                    const fogMix = THREE.MathUtils.smoothstep(distFromFocus, 8.0, 20.0);
+                    color.lerp(new THREE.Color(0x000000), fogMix * 0.8);
+                }
+                
+                dummy.scale.set(s, s, 1);
+                dummy.updateMatrix();
+                
+                data.mesh.setMatrixAt(data.instanceIndex, dummy.matrix);
+                data.mesh.setColorAt(data.instanceIndex, color);
+              });
+
+              instancedMeshes.forEach(mesh => {
+                 mesh.instanceMatrix.needsUpdate = true;
+                 if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+              });
+
+              // Photos
+              if (photosGroupRef.current) {
+                currentPhotos.forEach((photo) => {
+                  let sprite = photosGroupRef.current?.children.find(c => c.userData.id === photo.id);
+                  if (!sprite) {
+                    const map = new THREE.TextureLoader().load(photo.url);
+                    map.colorSpace = THREE.SRGBColorSpace;
+                    const mat = new THREE.SpriteMaterial({ map: map, color: 0xffffff });
+                    sprite = new THREE.Sprite(mat);
+                    sprite.userData = { id: photo.id, aspectRatio: photo.aspectRatio };
+                    sprite.scale.set(0,0,0);
+                    sprite.position.set((Math.random()-0.5)*2, (Math.random()-0.5)*2, 0.5);
+                    photosGroupRef.current?.add(sprite);
+                  }
+                });
+
+                photosGroupRef.current.children.forEach((child, idx) => {
+                    const sprite = child;
+                    const spriteAspectRatio = sprite.userData.aspectRatio || 1.0;
+                    
+                    const isActive = sprite.userData.id === activePhotoId;
+                    const isPinched = isPinchedState && currentPinchDist < 0.3;
+                    
+                    // UPDATED: Base scale increased from 6.0 to 8.4 (+40%)
+                    const baseScale = 8.4;
+                    const targetHeight = (isPinched && isActive) ? baseScale : 0.0;
+                    const targetWidth = targetHeight * spriteAspectRatio;
+
+                    sprite.scale.x = THREE.MathUtils.lerp(sprite.scale.x, targetWidth, delta * 5);
+                    sprite.scale.y = THREE.MathUtils.lerp(sprite.scale.y, targetHeight, delta * 5);
+
+                    if (isPinched && isActive) {
+                         sprite.position.y += Math.sin(time + idx) * 0.002;
+                         sprite.material.color.setScalar(1.0); 
+                    }
+                });
+              }
+
+              renderer.render(scene, camera);
+            };
+
+            animate();
+
+            const handleResize = () => {
+              camera.aspect = window.innerWidth / window.innerHeight;
+              camera.updateProjectionMatrix();
+              renderer.setSize(window.innerWidth, window.innerHeight);
+            };
+
+            window.addEventListener('resize', handleResize);
+
+            return () => {
+              window.removeEventListener('resize', handleResize);
+              cancelAnimationFrame(animationFrameId);
+              if (mountRef.current) {
+                mountRef.current.removeChild(renderer.domElement);
+              }
+              renderer.dispose();
+              scene.clear();
+            };
+          }, [shapeTargetPoints]); 
+
+          return <div ref={mountRef} className="absolute inset-0 z-0" />;
+        };
+
+        // --- COMPONENT: ConfigPanel ---
+        const ConfigPanel = ({ config, setConfig }) => {
+          const [isOpen, setIsOpen] = useState(false);
+
+          const handleChange = (key, value) => {
+            setConfig(prev => ({ ...prev, [key]: value }));
+          };
+
+          if (!isOpen) {
+            return (
+              <button 
+                onClick={() => setIsOpen(true)}
+                className="fixed top-4 right-4 z-50 p-2 bg-white/10 backdrop-blur-md rounded-full border border-white/20 text-white/70 hover:bg-white/20 transition-all hover:scale-105"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+              </button>
+            );
+          }
+
+          return (
+            <div className="fixed top-4 right-4 z-50 w-72 bg-black/80 backdrop-blur-xl border border-white/10 rounded-2xl p-4 text-xs font-sans text-white/80 shadow-2xl max-h-[90vh] flex flex-col">
+              <div className="flex justify-between items-center mb-4 pb-2 border-b border-white/10 flex-shrink-0">
+                <h3 className="font-bold text-sm tracking-wider uppercase text-yellow-500">Style Settings</h3>
+                <button onClick={() => setIsOpen(false)} className="hover:text-white">✕</button>
+              </div>
+
+              <div className="space-y-4 overflow-y-auto pr-2 custom-scrollbar flex-grow">
+                <section>
+                  <h4 className="mb-2 font-semibold text-white/60">Glass Material</h4>
+                  <div className="space-y-3">
+                     <div className="flex items-center justify-between pt-2">
+                        <label>Bg Color</label>
+                        <input type="color" value={config.containerBgColor} onChange={(e) => handleChange('containerBgColor', e.target.value)} className="w-8 h-6 rounded cursor-pointer bg-transparent" />
+                     </div>
+                     <div>
+                        <div className="flex justify-between items-center"><label>Opacity</label><span className="text-white/40">{Math.round(config.containerBgOpacity * 100)}%</span></div>
+                        <input type="range" min="0" max="1" step="0.01" value={config.containerBgOpacity} onChange={(e) => handleChange('containerBgOpacity', parseFloat(e.target.value))} className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer" />
+                     </div>
+                  </div>
+                </section>
+              </div>
+            </div>
+          );
+        };
+
+        // --- COMPONENT: Overlay ---
+        const Overlay = ({ onAddPhoto, gestureName }) => {
+          const fileInputRef = useRef(null);
+          const handleIconClick = () => fileInputRef.current?.click();
+
+          return (
+            <div className="absolute inset-0 z-10 pointer-events-none flex flex-col justify-between" style={{ fontFamily: '"Microsoft YaHei", sans-serif' }}>
+              
+              {/* Top Right Controls Group */}
+              <div className="fixed top-4 right-16 pointer-events-auto z-50">
+                <button 
+                    onClick={handleIconClick}
+                    className="p-2 bg-white/10 backdrop-blur-md rounded-full border border-white/20 text-white/70 hover:bg-white/20 transition-all hover:scale-105 group"
+                    title="Upload Photos"
+                >
+                    {/* Updated: Cute Rocking Horse Icon */}
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="group-hover:text-yellow-200 transition-colors">
+                        <path d="M5 18.5a14 14 0 0 0 14 0"></path>
+                        <path d="M16 13.5v-3.5l-6-3"></path>
+                        <path d="M10 13.5v-3"></path>
+                        <path d="M12 7l1-2a2 2 0 0 1 2-1 2 2 0 0 1 2 2c0 2-2 3-2 3"></path>
+                        <path d="M8 14h8"></path>
+                    </svg>
+                </button>
+                <input type="file" accept="image/*" ref={fileInputRef} className="hidden" onChange={onAddPhoto} multiple />
+              </div>
+
+              {/* Bottom Status Area - Simplified */}
+              <div className="absolute bottom-10 left-0 right-0 flex justify-center pointer-events-none">
+                  <div className="flex flex-col items-center gap-4">
+                     <div className="flex items-center gap-3 px-5 py-2 rounded-full bg-black/40 backdrop-blur-xl border border-white/10 text-white/90 shadow-2xl transition-all duration-300">
+                        <span className="text-[10px] uppercase tracking-[0.2em] text-white/40">Status</span>
+                        <div className="w-px h-3 bg-white/20"></div>
+                        <span className="text-sm font-bold text-yellow-400 tracking-wide min-w-[60px] text-center">
+                            {gestureName === 'NONE' ? 'WAITING' : gestureName}
+                        </span>
+                     </div>
+
+                     <div className="flex gap-8 text-[10px] text-white/30 uppercase tracking-widest transition-opacity duration-500">
+                        <div className={`flex items-center gap-2 transition-all duration-300 ${gestureName === 'OPEN_PALM' ? 'text-yellow-200 opacity-100' : ''}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full transition-all duration-300 ${gestureName === 'OPEN_PALM' ? 'bg-yellow-400 shadow-[0_0_10px_#facc15] scale-125' : 'bg-white/20'}`}></span>
+                            <span>Flow</span>
+                        </div>
+                        <div className={`flex items-center gap-2 transition-all duration-300 ${gestureName === 'FIST' ? 'text-red-300 opacity-100' : ''}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full transition-all duration-300 ${gestureName === 'FIST' ? 'bg-red-500 shadow-[0_0_10px_#ef4444] scale-125' : 'bg-white/20'}`}></span>
+                            <span>Form</span>
+                        </div>
+                        <div className={`flex items-center gap-2 transition-all duration-300 ${gestureName === 'PINCH' ? 'text-blue-300 opacity-100' : ''}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full transition-all duration-300 ${gestureName === 'PINCH' ? 'bg-blue-400 shadow-[0_0_10px_#60a5fa] scale-125' : 'bg-white/20'}`}></span>
+                            <span>Photo</span>
+                        </div>
+                     </div>
+                  </div>
+              </div>
+            </div>
+          );
+        };
+
+        // --- COMPONENT: App ---
+        const App = () => {
+          const videoRef = useRef(null);
+          const [gesture, setGesture] = useState(GestureType.NONE);
+          const [pinchDistance, setPinchDistance] = useState(1);
+          const [handOpenAmount, setHandOpenAmount] = useState(0.5);
+          const [photos, setPhotos] = useState([]);
+          const [isMediaPipeReady, setIsMediaPipeReady] = useState(false);
+
+          const [uiConfig, setUiConfig] = useState({
+            containerBgColor: '#ffffff',
+            containerBgOpacity: 0.05,
+            containerBlur: 24,
+            containerBorderOpacity: 0.1,
+            containerShineOpacity: 0.5,
+          });
+
+          const getDistance = (p1, p2) => Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+
+          useEffect(() => {
+            let intervalId;
+            
+            const initMediaPipe = () => {
+                if (!window.Hands || !window.Camera || !videoRef.current) return false;
+
+                const hands = new window.Hands({
+                    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+                });
+
+                hands.setOptions({
+                    maxNumHands: 1,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+
+                hands.onResults((results) => {
+                    if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+                        setGesture(GestureType.NONE);
+                        setHandOpenAmount(prev => prev * 0.95 + 0.5 * 0.05);
+                        return;
+                    }
+
+                    const landmarks = results.multiHandLandmarks[0];
+                    const wrist = landmarks[0];
+                    const middleMCP = landmarks[9];
+                    const indexTip = landmarks[8];
+                    const thumbTip = landmarks[4];
+                    
+                    const handSize = getDistance(wrist, middleMCP) || 0.1;
+
+                    const tips = [4, 8, 12, 16, 20].map(i => landmarks[i]);
+                    let totalDistToWrist = 0;
+                    tips.forEach(tip => totalDistToWrist += getDistance(tip, wrist));
+                    const avgDist = totalDistToWrist / 5;
+                    const opennessRatio = avgDist / handSize; 
+                    const normalizedOpen = Math.min(Math.max((opennessRatio - 0.8) / 1.2, 0), 1);
+                    setHandOpenAmount(normalizedOpen);
+
+                    const pinchAbsDist = getDistance(thumbTip, indexTip);
+                    const pinchRatio = pinchAbsDist / handSize;
+                    setPinchDistance(pinchRatio);
+
+                    if (pinchRatio < 0.25) { 
+                        setGesture(GestureType.PINCH);
+                    } else if (opennessRatio < 1.1) { 
+                        setGesture(GestureType.FIST);
+                    } else {
+                        setGesture(GestureType.OPEN_PALM);
+                    }
+                });
+
+                const camera = new window.Camera(videoRef.current, {
+                    onFrame: async () => {
+                        if (videoRef.current) await hands.send({image: videoRef.current});
+                    },
+                    width: 640,
+                    height: 480
+                });
+                camera.start();
+
+                setIsMediaPipeReady(true);
+                return true;
+            };
+
+            if (!initMediaPipe()) {
+                intervalId = setInterval(() => {
+                    if (initMediaPipe()) clearInterval(intervalId);
+                }, 500);
+            }
+
+            return () => {
+                if (intervalId) clearInterval(intervalId);
+            };
+          }, []);
+
+          const handleAddPhoto = useCallback((e) => {
+            if (e.target.files && e.target.files.length > 0) {
+              Array.from(e.target.files).forEach(file => {
+                  const url = URL.createObjectURL(file);
+                  const img = new Image();
+                  img.onload = () => {
+                    const aspectRatio = img.width / img.height;
+                    setPhotos(prev => [...prev, { 
+                        id: Math.random().toString(36).substr(2, 9) + Date.now(), 
+                        url, 
+                        aspectRatio 
+                    }]);
+                  };
+                  img.src = url;
+              });
+            }
+          }, []);
+
+          return (
+            <div 
+              className="relative w-full h-screen overflow-hidden"
+              style={{
+                background: 'radial-gradient(circle at 50% 30%, #3a0909 0%, #1a0202 50%, #000000 100%)'
+              }}
+            >
+              <video ref={videoRef} className="hidden" playsInline muted />
+              
+              {!isMediaPipeReady && (
+                <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 text-white backdrop-blur-sm">
+                   <div className="text-center">
+                     <p className="text-xl mb-2 font-light tracking-widest text-yellow-100">Initializing Experience...</p>
+                     <div className="w-8 h-8 border-4 border-red-800 border-t-yellow-500 rounded-full animate-spin mx-auto"></div>
+                   </div>
+                </div>
+              )}
+
+              <Experience 
+                gesture={gesture} 
+                pinchDistance={pinchDistance}
+                photos={photos}
+                handOpenAmount={handOpenAmount}
+              />
+
+              <Overlay 
+                onAddPhoto={handleAddPhoto} 
+                gestureName={gesture} 
+              />
+              
+              <ConfigPanel config={uiConfig} setConfig={setUiConfig} />
+            </div>
+          );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

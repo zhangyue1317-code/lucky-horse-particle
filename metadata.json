@@ -1,0 +1,7 @@
+{
+  "name": "Lucky Horse Particles",
+  "description": "A Year of the Horse interactive particle system controlled by hand gestures.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
